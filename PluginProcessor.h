@@ -2,6 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <array>
+#include <atomic>
 #include <vector>
 
 // Filtro de peine con amortiguación (lowpass en el lazo de realimentación)
@@ -66,7 +67,7 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
-    const juce::String getName() const override { return "SimpleVerb"; }
+    const juce::String getName() const override { return "Musikverb"; }
     bool acceptsMidi() const override { return false; }
     bool producesMidi() const override { return false; }
     bool isMidiEffect() const override { return false; }
@@ -82,6 +83,9 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     juce::AudioProcessorValueTreeState apvts;
+
+    // Nivel de salida (0..1) que lee la interfaz para animarse
+    std::atomic<float> outputLevel { 0.0f };
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();

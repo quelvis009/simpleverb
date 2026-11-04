@@ -1,4 +1,5 @@
 #include "PluginProcessor.h"
+#include "PluginEditor.h"
 
 namespace
 {
@@ -14,23 +15,42 @@ juce::AudioProcessorValueTreeState::ParameterLayout ReverbProcessor::createLayou
 {
     using P = juce::AudioParameterFloat;
     using R = juce::NormalisableRange<float>;
+    using A = juce::AudioParameterFloatAttributes;
+
+    auto percentText = [] (float v, int) { return juce::String (juce::roundToInt (v * 100.0f)) + " %"; };
+    auto percentParse = [] (const juce::String& t) { return t.getFloatValue() / 100.0f; };
 
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
 
     layout.add (std::make_unique<P> (juce::ParameterID { "size", 1 }, "Size",
-                                     R (0.0f, 1.0f, 0.001f), 0.6f));
+                                     R (0.0f, 1.0f, 0.001f), 0.6f,
+                                     A().withStringFromValueFunction (percentText)
+                                        .withValueFromStringFunction (percentParse)));
+
     layout.add (std::make_unique<P> (juce::ParameterID { "damping", 1 }, "Damping",
-                                     R (0.0f, 1.0f, 0.001f), 0.5f));
+                                     R (0.0f, 1.0f, 0.001f), 0.5f,
+                                     A().withStringFromValueFunction (percentText)
+                                        .withValueFromStringFunction (percentParse)));
+
     layout.add (std::make_unique<P> (juce::ParameterID { "width", 1 }, "Width",
-                                     R (0.0f, 1.0f, 0.001f), 1.0f));
+                                     R (0.0f, 1.0f, 0.001f), 1.0f,
+                                     A().withStringFromValueFunction (percentText)
+                                        .withValueFromStringFunction (percentParse)));
+
     layout.add (std::make_unique<P> (juce::ParameterID { "predelay", 1 }, "Pre-Delay",
                                      R (0.0f, 200.0f, 0.1f), 20.0f,
-                                     juce::AudioParameterFloatAttributes().withLabel ("ms")));
+                                     A().withStringFromValueFunction ([] (float v, int) { return juce::String (v, 1) + " ms"; })
+                                        .withValueFromStringFunction ([] (const juce::String& t) { return t.getFloatValue(); })));
+
     layout.add (std::make_unique<P> (juce::ParameterID { "lowcut", 1 }, "Low Cut",
                                      R (20.0f, 1000.0f, 1.0f, 0.4f), 100.0f,
-                                     juce::AudioParameterFloatAttributes().withLabel ("Hz")));
+                                     A().withStringFromValueFunction ([] (float v, int) { return juce::String (juce::roundToInt (v)) + " Hz"; })
+                                        .withValueFromStringFunction ([] (const juce::String& t) { return t.getFloatValue(); })));
+
     layout.add (std::make_unique<P> (juce::ParameterID { "mix", 1 }, "Mix",
-                                     R (0.0f, 1.0f, 0.001f), 0.3f));
+                                     R (0.0f, 1.0f, 0.001f), 0.3f,
+                                     A().withStringFromValueFunction (percentText)
+                                        .withValueFromStringFunction (percentParse)));
     return layout;
 }
 
@@ -87,7 +107,6 @@ void ReverbProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     if (buffer.getNumChannels() < 2 || numSamples == 0)
         return;
 
-    // Objetivos de los parámetros (se suavizan por muestra)
     feedbackSmooth.setTargetValue (apvts.getRawParameterValue ("size")->load() * 0.28f + 0.7f);
     dampSmooth.setTargetValue (apvts.getRawParameterValue ("damping")->load() * 0.4f);
     mixSmooth.setTargetValue (apvts.getRawParameterValue ("mix")->load());
@@ -100,6 +119,8 @@ void ReverbProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 
     auto* left  = buffer.getWritePointer (0);
     auto* right = buffer.getWritePointer (1);
+
+    float peak = 0.0f;
 
     for (int n = 0; n < numSamples; ++n)
     {
@@ -157,12 +178,16 @@ void ReverbProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
 
         left[n]  = dryL * dryGain + wetL * wetGain;
         right[n] = dryR * dryGain + wetR * wetGain;
+
+        peak = juce::jmax (peak, std::abs (left[n]), std::abs (right[n]));
     }
+
+    outputLevel.store (juce::jmin (peak, 1.0f));
 }
 
 juce::AudioProcessorEditor* ReverbProcessor::createEditor()
 {
-    return new juce::GenericAudioProcessorEditor (*this);
+    return new ReverbEditor (*this);
 }
 
 void ReverbProcessor::getStateInformation (juce::MemoryBlock& destData)
