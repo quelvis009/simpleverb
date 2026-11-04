@@ -9,6 +9,13 @@ namespace
     constexpr int stereoSpread     = 23;
     constexpr float inputGain      = 0.015f;
     constexpr float wetScale       = 3.0f;
+    constexpr float maxRoomScale   = 2.25f;
+
+    void setParam (juce::AudioProcessorValueTreeState& state, const char* id, float value)
+    {
+        if (auto* p = state.getParameter (id))
+            p->setValueNotifyingHost (p->convertTo0to1 (value));
+    }
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout ReverbProcessor::createLayout()
@@ -21,6 +28,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout ReverbProcessor::createLayou
     auto percentParse = [] (const juce::String& t) { return t.getFloatValue() / 100.0f; };
 
     juce::AudioProcessorValueTreeState::ParameterLayout layout;
+
+    layout.add (std::make_unique<juce::AudioParameterChoice> (
+        juce::ParameterID { "room", 1 }, "Room",
+        juce::StringArray { "Room", "Plate", "Chamber", "Hall", "Cathedral", "Space" }, 3));
 
     layout.add (std::make_unique<P> (juce::ParameterID { "size", 1 }, "Size",
                                      R (0.0f, 1.0f, 0.001f), 0.6f,
@@ -68,32 +79,75 @@ bool ReverbProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
         && layouts.getMainInputChannelSet() == layouts.getMainOutputChannelSet();
 }
 
-void ReverbProcessor::prepareToPlay (double sampleRate, int)
+float ReverbProcessor::estimateDecaySeconds (int room, float size)
 {
-    currentSampleRate = sampleRate;
-    const double scale = sampleRate / 44100.0;
+    room = juce::jlimit (0, numRooms - 1, room);
+    const auto& r = roomSpecs[room];
+    const float fb = r.fbLo + size * (r.fbHi - r.fbLo);
+    const float delaySeconds = 1370.0f * r.scale / 44100.0f;
+    return juce::jlimit (0.05f, 60.0f, -3.0f * delaySeconds / std::log10 (fb));
+}
+
+float ReverbProcessor::computeFeedback (int room) const
+{
+    const auto& r = roomSpecs[juce::jlimit (0, numRooms - 1, room)];
+    const float size = apvts.getRawParameterValue ("size")->load();
+    return r.fbLo + size * (r.fbHi - r.fbLo);
+}
+
+float ReverbProcessor::computeDamp (int room) const
+{
+    const auto& r = roomSpecs[juce::jlimit (0, numRooms - 1, room)];
+    const float damping = apvts.getRawParameterValue ("damping")->load();
+    return juce::jlimit (0.0f, 0.7f, damping * 0.4f + r.dampBias);
+}
+
+void ReverbProcessor::applyRoom (int room)
+{
+    room = juce::jlimit (0, numRooms - 1, room);
+    const double srScale = currentSampleRate / 44100.0;
+    const double sc = (double) roomSpecs[room].scale;
 
     for (int i = 0; i < numCombs; ++i)
     {
-        combL[(size_t) i].init ((int) (combTuning[i] * scale));
-        combR[(size_t) i].init ((int) ((combTuning[i] + stereoSpread) * scale));
+        combL[(size_t) i].setLength ((int) (combTuning[i] * srScale * sc));
+        combR[(size_t) i].setLength ((int) ((combTuning[i] + stereoSpread) * srScale * sc));
+        combL[(size_t) i].clear();
+        combR[(size_t) i].clear();
+    }
+
+    currentRoom = room;
+}
+
+void ReverbProcessor::prepareToPlay (double sampleRate, int)
+{
+    currentSampleRate = sampleRate;
+    const double srScale = sampleRate / 44100.0;
+
+    for (int i = 0; i < numCombs; ++i)
+    {
+        combL[(size_t) i].init ((int) (combTuning[i] * srScale * maxRoomScale) + 8);
+        combR[(size_t) i].init ((int) ((combTuning[i] + stereoSpread) * srScale * maxRoomScale) + 8);
     }
 
     for (int i = 0; i < numAllpasses; ++i)
     {
-        allpassL[(size_t) i].init ((int) (allpassTuning[i] * scale));
-        allpassR[(size_t) i].init ((int) ((allpassTuning[i] + stereoSpread) * scale));
+        allpassL[(size_t) i].init ((int) (allpassTuning[i] * srScale));
+        allpassR[(size_t) i].init ((int) ((allpassTuning[i] + stereoSpread) * srScale));
     }
 
     preDelayBuffer.assign ((size_t) (sampleRate * 0.25) + 1, 0.0f);
     preDelayWrite = 0;
     hpStateL = hpStateR = 0.0f;
 
+    const int room = juce::jlimit (0, numRooms - 1, (int) apvts.getRawParameterValue ("room")->load());
+    applyRoom (room);
+
     for (auto* s : { &feedbackSmooth, &dampSmooth, &mixSmooth, &widthSmooth, &lowCutSmooth })
         s->reset (sampleRate, 0.05);
 
-    feedbackSmooth.setCurrentAndTargetValue (apvts.getRawParameterValue ("size")->load() * 0.28f + 0.7f);
-    dampSmooth.setCurrentAndTargetValue (apvts.getRawParameterValue ("damping")->load() * 0.4f);
+    feedbackSmooth.setCurrentAndTargetValue (computeFeedback (room));
+    dampSmooth.setCurrentAndTargetValue (computeDamp (room));
     mixSmooth.setCurrentAndTargetValue (apvts.getRawParameterValue ("mix")->load());
     widthSmooth.setCurrentAndTargetValue (apvts.getRawParameterValue ("width")->load());
     lowCutSmooth.setCurrentAndTargetValue (apvts.getRawParameterValue ("lowcut")->load());
@@ -107,8 +161,12 @@ void ReverbProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     if (buffer.getNumChannels() < 2 || numSamples == 0)
         return;
 
-    feedbackSmooth.setTargetValue (apvts.getRawParameterValue ("size")->load() * 0.28f + 0.7f);
-    dampSmooth.setTargetValue (apvts.getRawParameterValue ("damping")->load() * 0.4f);
+    const int room = juce::jlimit (0, numRooms - 1, (int) apvts.getRawParameterValue ("room")->load());
+    if (room != currentRoom)
+        applyRoom (room);
+
+    feedbackSmooth.setTargetValue (computeFeedback (room));
+    dampSmooth.setTargetValue (computeDamp (room));
     mixSmooth.setTargetValue (apvts.getRawParameterValue ("mix")->load());
     widthSmooth.setTargetValue (apvts.getRawParameterValue ("width")->load());
     lowCutSmooth.setTargetValue (apvts.getRawParameterValue ("lowcut")->load());
@@ -183,6 +241,21 @@ void ReverbProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Midi
     }
 
     outputLevel.store (juce::jmin (peak, 1.0f));
+}
+
+void ReverbProcessor::loadPreset (int index)
+{
+    index = juce::jlimit (0, numPresets - 1, index);
+    currentPresetIndex = index;
+
+    const auto& p = factoryPresets[index];
+    setParam (apvts, "room",     (float) p.room);
+    setParam (apvts, "size",     p.size);
+    setParam (apvts, "damping",  p.damping);
+    setParam (apvts, "width",    p.width);
+    setParam (apvts, "predelay", p.preDelay);
+    setParam (apvts, "lowcut",   p.lowCut);
+    setParam (apvts, "mix",      p.mix);
 }
 
 juce::AudioProcessorEditor* ReverbProcessor::createEditor()
