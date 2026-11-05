@@ -1,17 +1,22 @@
 cmake_minimum_required(VERSION 3.22)
-project(Musikverb VERSION 1.1.0)
+
+project(Musikverb VERSION 1.0.0)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 include(FetchContent)
 FetchContent_Declare(
     JUCE
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG 8.0.6
-    GIT_SHALLOW TRUE)
+    GIT_TAG 7.0.12
+    GIT_SHALLOW ON
+)
 FetchContent_MakeAvailable(JUCE)
 
 juce_add_plugin(Musikverb
-    COMPANY_NAME "MiEstudio"
-    PLUGIN_MANUFACTURER_CODE Mest
+    COMPANY_NAME "Keywyll"
+    PLUGIN_MANUFACTURER_CODE Kwyl
     PLUGIN_CODE Mkvb
     FORMATS VST3
     PRODUCT_NAME "Musikverb"
@@ -22,20 +27,21 @@ juce_add_plugin(Musikverb
     VST3_CATEGORIES Fx Reverb)
 
 target_sources(Musikverb PRIVATE
-    PluginProcessor.cpp
-    PluginProcessor.h
-    PluginEditor.cpp
-    PluginEditor.h)
+    Source/PluginProcessor.cpp
+    Source/PluginEditor.cpp)
 
 target_compile_definitions(Musikverb PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
-    JUCE_VST3_CAN_REPLACE_VST2=0)
+    JUCE_VST3_CAN_REPLACE_VST2=0
+    JUCE_DISPLAY_SPLASH_SCREEN=0)
+
+target_compile_options(Musikverb PRIVATE
+    $<$<CXX_COMPILER_ID:MSVC>:/utf-8>)
 
 target_link_libraries(Musikverb
     PRIVATE
         juce::juce_audio_utils
+        juce::juce_dsp
     PUBLIC
-        juce::juce_recommended_config_flags
-        juce::juce_recommended_lto_flags
-        juce::juce_recommended_warning_flags)
+        juce::juce_recommended_config_flags)
